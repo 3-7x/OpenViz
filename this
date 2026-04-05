@@ -1,0 +1,1195 @@
+print("\n \n Wlcme t o Openviz brah :heart: \n Press J to access Preset Maker!!!!!!!!!!! \n \n")
+--[[
+  Yo  ~ 1954real
+             tuff
+]]
+-- preset maker, press "J"
+loadstring(game:HttpGet("https://pastefy.app/fdfMWMok/raw"))()
+--
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+
+local orbiting = false
+local tracked = {}
+local idxCounter = 0
+local lookLocked = false
+local targetPlayer = player
+
+local audioVisualizerEnabled = true
+local maxRadiusBoost = 8
+local visualizerSensitivity = 1
+local smoothingFactor = 0.15
+local currentRadiusBoost = 0
+local loudnessThreshold = 50
+
+local currentSpeed = 2
+local currentSize = 5
+local currentHeight = 3
+local netlessEnabled = true
+local netlessVector = Vector3.new(5, 0, -30)
+local sessionSeed = math.random(1, 100000)
+
+local audioId = nil
+local dupeTargetAmount = 5
+local antiFlingEnabled = false
+local stealToolsEnabled = false
+
+-- Clone / Wheel state
+local clonePos = Vector3.new()
+local cloneVel = Vector3.new()
+local cloneLook = Vector3.new(0, 0, -1)
+local cloneOnGround = false
+local activeEmote = nil
+local emoteStartTime = 0
+local timeIdle = 0
+local wheelRollAngle = 0
+
+-- Camera part for R6Clone / Wheel view
+local camPart = Instance.new("Part")
+camPart.Name = "OpenVizCamPart"
+camPart.Transparency = 1
+camPart.CanCollide = false
+camPart.Anchored = true
+camPart.Size = Vector3.new(1, 1, 1)
+camPart.Parent = workspace
+
+local orbitPresets = {
+    ["Circle"]        = {radius=5,   speed=0.5, circleH=true},
+    ["Rolling Circle"]= {radius=5,   speed=0.5, circleH=true, rolling=true},
+    ["Random"]        = {radius=5,   speed=0.5, randommish=true},
+    ["Infinity"]      = {radius=4,   speed=0.5, infinity=true},
+    ["X Ring"]        = {radius=6,   speed=0.5, xRing=true},
+    ["Wings"]         = {radius=1,   speed=0.5, wingsV2=true},
+    ["R6 Clone"]      = {r6Clone=true},
+    ["Wheel"]         = {wheelClone=true},
+    ["Trefoil"]       = {radius=4,   speed=0.5, knot=true},
+    ["Wavy Circle"]   = {radius=5,   speed=0.5, wavy=true},
+    ["Back Infinity"] = {radius=4,   speed=0.52, backInfinity=true},
+    ["Torus Knot"]    = {radius=3,   speed=0.5, torusKnot=true},
+    ["Lissaj Curve"]  = {radius=4,   speed=0.5, lissajous=true},
+    ["Line"]          = {radius=2,   speed=3,   line=true},
+    ["Heart"]         = {radius=4,   speed=1.5, heart=true},
+    ["dih"]           = {radius=1.2, speed=0,   theThing=true},
+    ["Layered"]       = {radius=6,   speed=1,   layered=true},
+}
+local activePresetName = "Circle"
+local activePreset = orbitPresets[activePresetName]
+
+local customPresets = {}           -- name -> decoded table
+local customPresetNames = {"None"} -- list for dropdown
+local CustomPresetsDropdown = nil  -- captured UI element reference
+
+-- Reads all .json files from the OpenViz/ folder, auto-centers them,
+-- and populates the customPresets table + customPresetNames list.
+-- there is noBODY reading ts.
+local function refreshCustomPresets()
+    table.clear(customPresets)
+    table.clear(customPresetNames)
+    table.insert(customPresetNames, "None")
+
+    if isfolder and isfolder("OpenViz") and listfiles then
+        for _, filePath in ipairs(listfiles("OpenViz")) do
+            if filePath:match("%.json$") then
+                local ok, fileData = pcall(function() return readfile(filePath) end)
+                if ok then
+                    local ok2, decoded = pcall(function() return HttpService:JSONDecode(fileData) end)
+                    if ok2 and decoded and decoded.Points and #decoded.Points > 0 then
+
+                        -- Auto-center: subtract the average offset so the
+                        -- preset plays relative to the HRP instead of some
+                        -- arbitrary world position it was built at.
+                        local ax, ay, az = 0, 0, 0
+                        local n = #decoded.Points
+                        for _, pt in ipairs(decoded.Points) do
+                            ax = ax + pt.pos.x
+                            ay = ay + pt.pos.y
+                            az = az + pt.pos.z
+                        end
+                        ax, ay, az = ax/n, ay/n, az/n
+                        for _, pt in ipairs(decoded.Points) do
+                            pt.pos.x = pt.pos.x - ax
+                            pt.pos.y = pt.pos.y - ay
+                            pt.pos.z = pt.pos.z - az
+                        end
+
+                        local name = decoded.Name or filePath:match("([^/\\]+)%.json$")
+                        customPresets[name] = decoded
+                        table.insert(customPresetNames, name)
+                        print("OpenViz: Loaded custom preset -" .. name)
+                    end
+                end
+            end
+        end
+    end
+
+    -- If the dropdown UI element already exists, tell it to refresh.
+    if CustomPresetsDropdown then
+        pcall(function() CustomPresetsDropdown:Refresh(customPresetNames) end)
+        pcall(function() CustomPresetsDropdown:update(customPresetNames) end)
+        pcall(function() CustomPresetsDropdown:Update(customPresetNames) end)
+    end
+end
+refreshCustomPresets()
+
+-- Tracks the currently active custom preset name (separate from the
+-- built-in preset dropdown so they don't stomp each other).
+local activeCustomPresetName = "None"
+
+local function safePcall(fn, ...) return pcall(fn, ...) end
+local function countTracked()
+    local n = 0
+    for _ in pairs(tracked) do n = n + 1 end
+    return n
+end
+
+-- Catmull-Rom spline interpolation used by custom JSON presets.
+local function getSplineCFrame(t, p0, p1, p2, p3, s)
+    local function spline(t, v0, v1, v2, v3)
+        local t2, t3 = t*t, t*t*t
+        local tension = (1 - s) * 0.5
+        return v1
+            + t  * (tension * (v2 - v0))
+            + t2 * (2*tension*v0 + (tension-3)*v1 + (3-2*tension)*v2 - tension*v3)
+            + t3 * (-tension*v0 + (2-tension)*v1 + (tension-2)*v2 + tension*v3)
+    end
+    return CFrame.new(spline(t, p0.Position, p1.Position, p2.Position, p3.Position))
+         * p1.Rotation:Lerp(p2.Rotation, t)
+end
+
+-- Loudness polling — checks all tracked tools AND the local character.
+local function getMaxLoudness()
+    local maxLoudness = 0
+    for _, data in pairs(tracked) do
+        if not data.sound or not data.sound.Parent then
+            if data.handle and data.handle.Parent then
+                data.sound = data.handle.Parent:FindFirstChildWhichIsA("Sound", true)
+            end
+        end
+        if data.sound and data.sound.IsPlaying then
+            if data.sound.PlaybackLoudness > maxLoudness then
+                maxLoudness = data.sound.PlaybackLoudness
+            end
+        end
+    end
+    local myChar = player.Character
+    if myChar then
+        for _, item in ipairs(myChar:GetChildren()) do
+            if item:IsA("Tool") then
+                local s = item:FindFirstChildWhichIsA("Sound", true)
+                if s and s.IsPlaying and s.PlaybackLoudness > maxLoudness then
+                    maxLoudness = s.PlaybackLoudness
+                end
+            end
+        end
+    end
+    return maxLoudness
+end
+
+-- AlignPosition + AlignOrientation setup for a tool handle.
+local function setupMovers(handle)
+    local att = Instance.new("Attachment")
+    att.Name = "OrbitAtt"
+    att.Parent = handle
+
+    local alignPos = Instance.new("AlignPosition")
+    alignPos.Mode = Enum.PositionAlignmentMode.OneAttachment
+    alignPos.Attachment0 = att
+    alignPos.MaxForce = math.huge
+    alignPos.Responsiveness = 200
+    alignPos.ApplyAtCenterOfMass = true
+    alignPos.Parent = handle
+
+    local alignRot = Instance.new("AlignOrientation")
+    alignRot.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    alignRot.Attachment0 = att
+    alignRot.MaxTorque = math.huge
+    alignRot.Responsiveness = 200
+    alignRot.Parent = handle
+
+    return alignPos, alignRot, att
+end
+
+local function trackTool(tool)
+    if not tool or not tool:IsA("Tool") then return end
+    if tracked[tool] then return end
+    local handle = tool:FindFirstChild("Handle")
+    if not handle then return end
+    local sound = tool:FindFirstChildWhichIsA("Sound", true)
+    idxCounter = idxCounter + 1
+    safePcall(function()
+        handle.Massless = true
+        handle.CanCollide = false
+        handle.AssemblyLinearVelocity = Vector3.new(0, 4, 0)
+    end)
+    local ap, ao, att = setupMovers(handle)
+    tracked[tool] = {
+        handle = handle, sound = sound,
+        alignPos = ap, alignRot = ao, att = att,
+        index = idxCounter, netlessAllowed = false, startTime = tick()
+    }
+    task.delay(0.2, function() if tracked[tool] then tracked[tool].netlessAllowed = true end end)
+end
+
+local function untrackAndDestroy(tool)
+    local data = tracked[tool]
+    if not data then return end
+    safePcall(function()
+        if data.alignPos then data.alignPos:Destroy() end
+        if data.alignRot then data.alignRot:Destroy() end
+        if data.att      then data.att:Destroy()      end
+    end)
+    tracked[tool] = nil
+end
+
+local function setToolAnim(id)
+    if not character then return end
+    local animScript = character:FindFirstChild("Animate")
+    if animScript then
+        local toolNone = animScript:FindFirstChild("toolnone")
+        if toolNone then
+            local anim = toolNone:FindFirstChild("ToolNoneAnim")
+            if anim then anim.AnimationId = id end
+        end
+    end
+end
+
+local function stopVisualizer()
+    orbiting = false
+    idxCounter = 0
+    if player.Character and player.Character:FindFirstChild("Humanoid") then
+        player.Character.Humanoid.WalkSpeed = 16
+        player.Character.Humanoid.JumpPower = 50
+        workspace.CurrentCamera.CameraSubject = player.Character.Humanoid
+    end
+    for tool, _ in pairs(tracked) do untrackAndDestroy(tool) end
+    tracked = {}
+    for _, jjj in pairs(game.Players.LocalPlayer.Character:GetChildren()) do
+        if jjj:IsA("Tool") then jjj.Parent = game.Players.LocalPlayer.Backpack end
+    end
+    if player.Character and player.Character:FindFirstChild("Humanoid") then
+        if player.Character.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+            setToolAnim("http://www.roblox.com/asset/?id=507768375")
+        elseif player.Character.Humanoid.RigType == Enum.HumanoidRigType.R6 then
+            setToolAnim("rbxassetid://182393478")
+        end
+    end
+end
+
+local function computeTargetPos(index, t, hrp)
+    local preset = activePreset
+    local i = index or 1
+    local total = math.max(1, countTracked())
+    local baseVal = (preset.radius or 5)
+    if baseVal == 0 then baseVal = 1 end
+    local radiusMultiplier = 1 + (currentRadiusBoost / baseVal)
+
+    if preset.circleH then
+        local radius = currentSize * radiusMultiplier
+        local angle = t * currentSpeed + ((2 * math.pi / total) * (i - 1))
+        return hrp.CFrame:PointToWorldSpace(
+            Vector3.new(math.cos(angle)*radius, 0, math.sin(angle)*radius)
+            + Vector3.new(0, currentHeight, 0))
+
+    elseif preset.randommish then
+        local seed = (i * 82.55) + sessionSeed
+        local angle = (t * currentSpeed) + (math.sin(seed) * math.pi * 2)
+        local y = currentHeight + (math.cos(seed * 1.3) * 2.0)
+        local r = currentSize * radiusMultiplier
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(r * math.cos(angle), y, r * math.sin(angle)))
+
+    elseif preset.infinity then
+        local radius = currentSize * radiusMultiplier
+        local loopAngle = (math.pi * 2 / total) * (i - 1) + (t * currentSpeed)
+        return hrp.CFrame:PointToWorldSpace(
+            Vector3.new(radius * math.sin(loopAngle), currentHeight,
+                        radius * 0.7 * math.sin(loopAngle) * math.cos(loopAngle)))
+
+    elseif preset.xRing then
+        local radius = currentSize * radiusMultiplier
+        local half = math.ceil(total/2)
+        local ringIndex = (i > half) and (i - half) or i
+        local ringTotal = (i > half) and (total - half) or half
+        local angle = (t * currentSpeed) + ((ringIndex-1)/ringTotal) * math.pi * 2
+        local tilt = (i > half) and -math.rad(12.5) or math.rad(12.5)
+        return hrp.CFrame:PointToWorldSpace(
+            (CFrame.Angles(tilt, 0, 0) * Vector3.new(
+                math.cos(angle)*radius, 0, math.sin(angle)*radius))
+            + Vector3.new(0, currentHeight, 0))
+
+    elseif preset.wingsV2 then
+        local half = math.ceil(total / 2)
+        local isRight = i > half
+        local idx = isRight and (i - half) or i
+        local xDir = isRight and 1 or -1
+        if idx == 1 then
+            return hrp.CFrame:PointToWorldSpace(Vector3.new(1.2*xDir, currentHeight, 1.0))
+        else
+            local wave = (t * currentSpeed * 2) - (idx * 0.5)
+            return hrp.CFrame:PointToWorldSpace(Vector3.new(
+                (1.2*xDir) + (xDir*(idx-1)*currentSize*0.5),
+                currentHeight + ((idx-1)*currentSize*0.25) + (math.sin(wave)*(0.2+idx*0.12)),
+                1.0 + (idx*0.1) + (math.cos(wave)*(0.05+idx*0.01))))
+        end
+
+    elseif preset.wavy then
+        local radius = currentSize * radiusMultiplier
+        local angle = (math.pi*2/total)*(i-1) + (t*currentSpeed)
+        local wave = math.sin(angle*2) * (currentSize*0.3)
+        return hrp.CFrame:PointToWorldSpace(
+            Vector3.new(math.cos(angle)*radius, currentHeight+wave, math.sin(angle)*radius))
+
+    elseif preset.backInfinity then
+        local radius = currentSize * radiusMultiplier
+        local angle = (math.pi*2/total)*(i-1) + (t*currentSpeed)
+        local lx = radius * math.sin(angle)
+        local ly = radius * 0.6 * math.sin(angle) * math.cos(angle)
+        local lz = 3 - (math.abs(lx)*0.3)
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(lx, currentHeight+ly, lz))
+
+    elseif preset.knot then
+        local radius = currentSize * radiusMultiplier * 0.4
+        local angle = (math.pi*2/total)*(i-1) + (t*currentSpeed)
+        local lx = math.sin(angle) + 2*math.sin(2*angle)
+        local ly = math.cos(angle) - 2*math.cos(2*angle)
+        local lz = -math.sin(3*angle)
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(lx*radius, currentHeight+ly*radius, lz*radius))
+
+    elseif preset.torusKnot then
+        local radius = currentSize * radiusMultiplier * 0.5
+        local angle = (math.pi*2/total)*(i-1) + (t*currentSpeed)
+        local p, q = 3, 4
+        local r_torus = math.cos(q*angle) + 2
+        local lx = r_torus * math.cos(p*angle)
+        local lz = r_torus * math.sin(p*angle)
+        local ly = -math.sin(q*angle)
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(lx*radius, currentHeight+ly*radius, lz*radius))
+
+    elseif preset.lissajous then
+        local radius = currentSize * radiusMultiplier
+        local angle = (math.pi*2/total)*(i-1) + (t*currentSpeed)
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(
+            math.sin(3*angle)*radius,
+            currentHeight + math.sin(4*angle)*radius,
+            math.cos(5*angle)*radius))
+
+    elseif preset.line then
+        local spacing = (currentSize*0.4) + (audioVisualizerEnabled and (currentRadiusBoost*0.2) or 0)
+        local centerOffset = (i - (total/2) - 0.5) * spacing
+        local waveVal = math.sin((t*currentSpeed) + (i*0.5)) * 1.5
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(centerOffset, waveVal+currentHeight, 0))
+
+    elseif preset.heart then
+        local angle = (i/total)*math.pi*2 + (t*currentSpeed*0.5)
+        local x = 16 * math.pow(math.sin(angle), 3)
+        local y = 13*math.cos(angle) - 5*math.cos(2*angle) - 2*math.cos(3*angle) - math.cos(4*angle)
+        local scale = currentSize * 0.05 * radiusMultiplier
+        return hrp.CFrame:PointToWorldSpace(Vector3.new(x*scale, y*scale+currentHeight, 0))
+
+    elseif preset.theThing then
+        local spacing = currentSize + (audioVisualizerEnabled and (currentRadiusBoost*0.2) or 0)
+        local totalDist = 0.03 + (i*spacing)
+        local yOffset = (i==1) and (currentHeight-0.7) or currentHeight
+        return hrp.Position + (hrp.CFrame.LookVector*totalDist) + Vector3.new(0, yOffset, 0)
+
+    elseif preset.layered then
+        local layer = math.floor((i-1)/8)
+        local indexInLayer = (i-1)%8
+        local toolsInThisLayer = math.min(8, total-(layer*8))
+        local radius = currentSize * radiusMultiplier
+        local angle = t*currentSpeed + ((2*math.pi/math.max(1,toolsInThisLayer))*indexInLayer)
+        local layerHeight = currentHeight + (layer*4)
+        return hrp.CFrame:PointToWorldSpace(
+            Vector3.new(math.cos(angle)*radius, layerHeight, math.sin(angle)*radius))
+
+    else
+        local radius = currentSize * radiusMultiplier
+        local angle = t*currentSpeed + i*0.5
+        return hrp.Position + Vector3.new(
+            math.cos(angle)*radius, currentHeight+i*0.25, math.sin(angle)*radius)
+    end
+end
+
+local function getTargetLookPos(index, hrp)
+    if lookLocked then return hrp.Position end
+    if activePreset.wingsV2 or activePreset.theThing then
+        return hrp.Position + hrp.CFrame.LookVector * 50
+    end
+    if activePreset.randommish then
+        local seed = (index * 45.1) + sessionSeed
+        return hrp.Position + Vector3.new(
+            math.sin(seed)*50, math.cos(seed*0.5)*50, math.sin(seed*1.5)*50)
+    end
+    return nil
+end
+
+local libary = loadstring(game:HttpGet("https://pastefy.app/emjSZ0kC/raw"))()
+local Window  = libary:new({name = "OpenViz", accent = Color3.fromRGB(90, 160, 255), textsize = 13})
+local MainTab = Window:page({name = "Visualizer"})
+local MiscTab = Window:page({name = "Misc"})
+
+local ControlsSec = MainTab:section({name = "Controls",  side = "left",  size = 230})
+local SettingsSec = MainTab:section({name = "Settings",  side = "right", size = 290})
+local MiscSec     = MiscTab:section({name = "hi yo",     side = "left",  size = 200})
+
+-- Built-in presets dropdown
+local presetOptions = {}
+for k in pairs(orbitPresets) do table.insert(presetOptions, k) end
+table.sort(presetOptions)
+
+SettingsSec:dropdown({
+    name = "Presets",
+    def = "Circle",
+    max = 5,
+    options = presetOptions,
+    callback = function(val)
+        -- Switching to a built-in preset clears any active custom preset.
+        activePresetName = val
+        activePreset = orbitPresets[val]
+        activeCustomPresetName = "None"
+        if val == "Random" then sessionSeed = math.random(1, 100000) end
+        if orbiting and character and character:FindFirstChild("Humanoid") then
+            if activePreset.r6Clone or activePreset.wheelClone then
+                character.Humanoid.WalkSpeed = 0
+                character.Humanoid.JumpPower = 0
+                if character:FindFirstChild("HumanoidRootPart") then
+                    clonePos = character.HumanoidRootPart.Position
+                              + character.HumanoidRootPart.CFrame.LookVector * -3
+                    cloneLook = character.HumanoidRootPart.CFrame.LookVector
+                end
+                workspace.CurrentCamera.CameraSubject = camPart
+            else
+                character.Humanoid.WalkSpeed = 16
+                character.Humanoid.JumpPower = 50
+                workspace.CurrentCamera.CameraSubject = character.Humanoid
+            end
+        end
+    end
+})
+
+SettingsSec:dropdown({
+    name = "Custom Presets",
+    def = "None",
+    max = 5,
+    options = customPresetNames,
+    callback = function(val)
+        activeCustomPresetName = val
+        if val == "None" then
+            -- Fall back to whatever built-in preset is currently selected.
+            activePreset = orbitPresets[activePresetName]
+        else
+            local cp = customPresets[val]
+            if cp then
+                -- Build a pseudo-preset table that the heartbeat loop
+                -- recognises via the .custom flag.
+                activePreset = {
+                    custom  = true,
+                    Points  = cp.Points,
+                    Tension = cp.Tension or 0.5,
+                    Speed   = cp.Speed   or 1,
+                }
+                print("Switched to custom preset -" .. val)
+            end
+        end
+    end,
+    -- Capture the dropdown object so refreshCustomPresets() can update it later.
+    oncreate = function(obj) CustomPresetsDropdown = obj end
+})
+-- Refresh button so the user can reload presets without re-running the script THIS DOESNT FUCKING WORK
+SettingsSec:button({
+    name = "Refresh",
+    callback = function()
+        refreshCustomPresets()
+        print("OpenViz: Custom presets refreshed. Found " .. (#customPresetNames - 1) .. " preset(s)." .. " \n Yeah this prob didnt do anything lmao, if it did so wow. just re execute the script.. \n")
+    end
+})
+
+SettingsSec:slider({name="Speed",  def=2,   max=20,  min=1,   rounding=true, callback=function(v) currentSpeed  = v*0.25 end})
+SettingsSec:slider({name="Size",   def=5,   max=50,  min=1,   rounding=true, callback=function(v) currentSize   = v      end})
+SettingsSec:slider({name="Height", def=3,   max=30,  min=-10, rounding=true, callback=function(v) currentHeight = v      end})
+SettingsSec:slider({name="Visualizer Sensitivity", def=100, max=100, min=0, rounding=true, callback=function(v) visualizerSensitivity = v/100 end})
+SettingsSec:toggle({name="Audio Visualize (React)", def=true,  callback=function(b) audioVisualizerEnabled = b end})
+SettingsSec:toggle({name="Netless",                  def=true,  callback=function(b) netlessEnabled         = b end})
+
+ControlsSec:textbox({name="Target Player", def="", callback=function(text)
+    if text == "" then targetPlayer = player; return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if string.sub(string.lower(p.Name),        1, #text) == string.lower(text)
+        or string.sub(string.lower(p.DisplayName), 1, #text) == string.lower(text) then
+            targetPlayer = p; return
+        end
+    end
+    if not targetPlayer then targetPlayer = player end
+end})
+
+ControlsSec:textbox({name="Audio ID", def="", callback=function(text)
+    local id = string.match(text, "%d+")
+    if id then
+        audioId = tonumber(id)
+        if player.Character then
+            for _, tool in ipairs(player.Character:GetChildren()) do
+                if tool:IsA("Tool") and tool:FindFirstChild("Remote") then
+                    tool.Remote:FireServer("PlaySong", audioId)
+                end
+            end
+        end
+    end
+end})
+
+ControlsSec:button({name="Sync Audio", callback=function()
+    if not audioId then return end
+    if player.Character then
+        for _, tool in ipairs(player.Character:GetChildren()) do
+            if tool:IsA("Tool") and tool:FindFirstChild("Remote") then
+                tool.Remote:FireServer("PlaySong", audioId)
+            end
+        end
+    end
+end})
+
+ControlsSec:textbox({name="Dupe Amount", def="5", callback=function(text)
+    local n = tonumber(text)
+    if n and n > 0 then dupeTargetAmount = n end
+end})
+
+ControlsSec:button({name="Start Dupe", callback=function()
+    task.spawn(function()
+        local me = game.Players.LocalPlayer
+        local count = 0
+        local initialChar = me.Character or me.CharacterAdded:Wait()
+        local hrcf = initialChar:WaitForChild("HumanoidRootPart").CFrame
+        local oldgrav = workspace.Gravity
+
+        while count < dupeTargetAmount do
+            local ch  = me.Character or me.CharacterAdded:Wait()
+            local hum = ch:WaitForChild("Humanoid")
+            for _, j in pairs(workspace:GetChildren()) do
+                if j:IsA("Tool") then hum:EquipTool(j) end
+            end
+            ch:WaitForChild("HumanoidRootPart").CFrame = CFrame.new(0, 3000, 0)
+            workspace.Gravity = 0
+            task.wait(0.7)
+            for _, v in pairs(me.Backpack:GetChildren()) do
+                if v:IsA("Tool") then v.Parent = ch end
+            end
+            task.wait(0.1954)
+            for _, v in pairs(ch:GetChildren()) do
+                if v:IsA("Tool") then v.Parent = workspace end
+            end
+            task.wait(0.2)
+            count = count + 1
+            hum.Health = 0
+            me.CharacterAdded:Wait()
+            task.wait(0.1)
+        end
+
+        local finalChar = me.Character or me.CharacterAdded:Wait()
+        local finalhum  = finalChar:WaitForChild("Humanoid")
+        for _, j in pairs(workspace:GetChildren()) do
+            if j:IsA("Tool") then finalhum:EquipTool(j) end
+        end
+        finalChar:WaitForChild("HumanoidRootPart").CFrame = hrcf
+        workspace.Gravity = oldgrav
+        print("yo dupe donezo brah :heart:")
+    end)
+end})
+-- THIS PART IS LIKE SO IMPORTANT
+ControlsSec:button({name="Visualize", callback=function()
+    stopVisualizer()
+    orbiting = true
+    idxCounter = 0
+    sessionSeed = math.random(1, 100000)
+    setToolAnim("rbxassetid://0")
+
+    for _, jjj in ipairs(game.Players.LocalPlayer.Character:GetChildren()) do
+        if jjj:IsA("Tool") then jjj.Parent = game.Players.LocalPlayer.Backpack end
+    end
+    task.wait(0.1954)
+
+    if (activePreset.r6Clone or activePreset.wheelClone)
+    and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        player.Character.Humanoid.WalkSpeed = 0
+        player.Character.Humanoid.JumpPower = 0
+        clonePos = player.Character.HumanoidRootPart.Position
+                  + player.Character.HumanoidRootPart.CFrame.LookVector * -3
+        cloneLook = player.Character.HumanoidRootPart.CFrame.LookVector
+        activeEmote = nil
+        timeIdle = 0
+        wheelRollAngle = 0
+        workspace.CurrentCamera.CameraSubject = camPart
+    else
+        if player.Character and player.Character:FindFirstChild("Humanoid") then
+            workspace.CurrentCamera.CameraSubject = player.Character.Humanoid
+        end
+    end
+
+    if player.Backpack then
+        for _, tool in ipairs(player.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then tool.Parent = player.Character end
+        end
+    end
+    task.wait(0.1954)
+    for _, jjj in ipairs(game.Players.LocalPlayer.Character:GetChildren()) do
+        if jjj:IsA("Tool") then jjj.Parent = game.Players.LocalPlayer.Backpack end
+    end
+    task.wait(0.1954)
+
+    for _, tool in ipairs(player:WaitForChild("Backpack"):GetChildren()) do
+        if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
+            tool.Parent = player.Character
+            tool.Parent = player.Backpack
+            if player.Character:FindFirstChild("Humanoid") then
+                tool.Parent = player.Character:FindFirstChild("Humanoid")
+            end
+            tool.Parent = player.Character
+            RunService.Heartbeat:Wait()
+            if tool:FindFirstChild("RightGrip") then
+                pcall(function() tool.RightGrip:Destroy() end)
+            end
+            trackTool(tool)
+        end
+    end
+end})
+
+
+MiscSec:toggle({name="Anti Fling",   def=false, callback=function(b) antiFlingEnabled  = b end})
+MiscSec:toggle({name="Steal Tools",  def=false, callback=function(b) stealToolsEnabled = b end})
+
+local audioSpyEnabled = false
+local spyTracked = {}
+local nameCache = {}
+local SPY_RANGE = 40
+
+local BLACKLIST = {
+    ["Climbing"]=true,["Died"]=true,["GettingUp"]=true,["Swimming"]=true,
+    ["Jumping"]=true,["Landing"]=true,["Splash"]=true,["FreeFalling"]=true,
+    ["Running"]=true
+}
+
+local spyScreenGui = Instance.new("ScreenGui")
+spyScreenGui.Name = "AudioSpyCore"
+spyScreenGui.ResetOnSpawn = false
+spyScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+spyScreenGui.Parent = (syn and syn.protect_gui and syn.protect_gui(spyScreenGui) and player:WaitForChild("PlayerGui"))
+                   or (gethui and gethui())
+                   or player:WaitForChild("PlayerGui")
+
+local function fmtTime(s)
+    s = s or 0
+    return string.format("%d:%02d", math.floor(s/60), math.floor(s%60))
+end
+local function extractId(s)
+    s = tostring(s or "")
+    return tonumber(s:match("rbxassetid://(%d+)"))
+        or tonumber(s:match("[?&]id=(%d+)"))
+        or tonumber(s:match("(%d+)"))
+        or 0
+end
+local function getName(id)
+    if id <= 0 then return "Unknown" end
+    if nameCache[id] then return nameCache[id] end
+    pcall(function() nameCache[id] = MarketplaceService:GetProductInfo(id, Enum.InfoType.Asset).Name end)
+    return nameCache[id] or "Unknown ("..id..")"
+end
+local function findValidAudio(char)
+    for _, obj in ipairs(char:GetDescendants()) do
+        if not BLACKLIST[obj.Name] then
+            if obj:IsA("Sound") and obj.IsPlaying then
+                local id = extractId(obj.SoundId)
+                if id > 0 then
+                    return obj, id, obj.Parent:IsA("BasePart") and obj.Parent or char:FindFirstChild("Head")
+                end
+            elseif obj:IsA("AudioPlayer") then
+                local id = extractId(obj.AssetId)
+                if id > 0 then return obj, id, char:FindFirstChild("Head") end
+            end
+        end
+    end
+end
+local function makeSpyBB(adornee)
+    local bb = Instance.new("BillboardGui", spyScreenGui)
+    bb.Size, bb.StudsOffset, bb.AlwaysOnTop, bb.Adornee = UDim2.new(0,210,0,90), Vector3.new(0,2.5,0), true, adornee
+    bb.Active = true
+    local m = Instance.new("Frame", bb)
+    m.Size, m.BackgroundColor3, m.BorderColor3, m.BorderSizePixel, m.BackgroundTransparency =
+        UDim2.new(1,0,1,-15), Color3.fromRGB(20,20,25), Color3.fromRGB(90,160,255), 1, 0.1
+    m.Active = true
+    local pad = Instance.new("UIPadding", m)
+    pad.PaddingLeft, pad.PaddingRight = UDim.new(0,8), UDim.new(0,8)
+    pad.PaddingTop,  pad.PaddingBottom = UDim.new(0,5), UDim.new(0,5)
+    local nameLbl = Instance.new("TextLabel", m)
+    nameLbl.Size, nameLbl.BackgroundTransparency, nameLbl.Font, nameLbl.TextColor3,
+    nameLbl.TextSize, nameLbl.Text, nameLbl.TextTruncate =
+        UDim2.new(1,0,0,20), 1, Enum.Font.GothamBold, Color3.fromRGB(90,160,255),
+        14, "Loading...", Enum.TextTruncate.AtEnd
+    local idRow = Instance.new("Frame", m)
+    idRow.Size, idRow.Position, idRow.BackgroundTransparency =
+        UDim2.new(1,0,0,24), UDim2.new(0,0,0,22), 1
+    local idLbl = Instance.new("TextLabel", idRow)
+    idLbl.Size, idLbl.BackgroundTransparency, idLbl.Font, idLbl.TextColor3,
+    idLbl.TextSize, idLbl.TextXAlignment, idLbl.Text =
+        UDim2.new(1,-75,1,0), 1, Enum.Font.Gotham, Color3.fromRGB(200,200,200),
+        12, Enum.TextXAlignment.Left, "ID: ..."
+    local copyBtn = Instance.new("TextButton", idRow)
+    copyBtn.Name, copyBtn.Size, copyBtn.Position, copyBtn.BackgroundColor3,
+    copyBtn.BorderSizePixel, copyBtn.Font, copyBtn.TextColor3,
+    copyBtn.TextSize, copyBtn.Text, copyBtn.Active, copyBtn.Selectable =
+        "CopyBtn", UDim2.new(0,70,1,0), UDim2.new(1,-70,0,0), Color3.fromRGB(40,40,50),
+        0, Enum.Font.GothamBold, Color3.new(1,1,1), 10, "COPY ID", true, true
+    local statLbl = Instance.new("TextLabel", m)
+    statLbl.Name, statLbl.Size, statLbl.Position, statLbl.BackgroundTransparency,
+    statLbl.Font, statLbl.TextColor3, statLbl.TextSize, statLbl.Text =
+        "Stats", UDim2.new(1,0,0,18), UDim2.new(0,0,0,48), 1,
+        Enum.Font.GothamMedium, Color3.fromRGB(150,150,150), 11, "0:00 / 0:00 ~~ L: 0"
+    return bb, nameLbl, idLbl, statLbl, copyBtn
+end
+
+MiscSec:toggle({name="Toggle Audio Spy", def=false, callback=function(b)
+    audioSpyEnabled = b
+    if not b then
+        for _,d in pairs(spyTracked) do if d.bb then d.bb:Destroy() end end
+        table.clear(spyTracked)
+    end
+end})
+
+MiscSec:button({name="Copy Id's in Server", callback=function()
+    local lines = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player and p.Character then
+            local obj, id = findValidAudio(p.Character)
+            if id then
+                table.insert(lines, p.Name.." was playing \""..id.."\", \""..(nameCache[id] or "Unknown Name").."\" atm")
+            end
+        end
+    end
+    if #lines > 0 then
+        local str = table.concat(lines, "\n")
+        if setclipboard then setclipboard(str) elseif toclipboard then toclipboard(str) end
+    end
+end})
+
+MiscSec:button({name="Useless Button", callback=function(b)
+print("This was gonna be the destroy gui button but nah")
+end})
+-- Audio Spy heartbeat
+RunService.Heartbeat:Connect(function()
+    if not audioSpyEnabled or not player.Character then return end
+    local myRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    local activePlrs = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp and (myRoot.Position - hrp.Position).Magnitude <= SPY_RANGE then
+                local obj, id, parentPart = findValidAudio(p.Character)
+                if id then
+                    activePlrs[p] = true
+                    if not spyTracked[p] then
+                        local bb, nLbl, iLbl, sLbl, btn = makeSpyBB(parentPart or hrp)
+                        spyTracked[p] = {bb=bb, nLbl=nLbl, iLbl=iLbl, sLbl=sLbl, fetch=0, cur=0}
+                        btn.MouseButton1Click:Connect(function()
+                            local s = tostring(spyTracked[p].cur)
+                            if setclipboard then setclipboard(s) elseif toclipboard then toclipboard(s) end
+                            btn.Text = "COPIED!" btn.BackgroundColor3 = Color3.fromRGB(90,160,255)
+                            task.delay(1, function()
+                                pcall(function() btn.Text="COPY ID" btn.BackgroundColor3=Color3.fromRGB(40,40,50) end)
+                            end)
+                        end)
+                    end
+                    local d = spyTracked[p]
+                    if d then
+                        d.cur = id
+                        d.bb.Adornee = parentPart or hrp
+                        if d.fetch ~= id then
+                            d.fetch = id d.nLbl.Text = "Fetching..."
+                            task.spawn(function()
+                                local nm = getName(id)
+                                if d.fetch == id and d.bb.Parent then d.nLbl.Text = nm end
+                            end)
+                        end
+                        d.iLbl.Text = "ID: "..id
+                        local loudness = (obj:IsA("Sound") and obj.PlaybackLoudness) or 0
+                        local curT = (obj:IsA("Sound") and obj.TimePosition)   or 0
+                        local maxT = (obj:IsA("Sound") and obj.TimeLength)      or 0
+                        d.sLbl.Text = fmtTime(curT).." / "..fmtTime(maxT).." ~~ L: "..math.floor(loudness)
+                    end
+                end
+            end
+        end
+    end
+    for p, d in pairs(spyTracked) do
+        if not activePlrs[p] then if d.bb then d.bb:Destroy() end spyTracked[p] = nil end
+    end
+end)
+Players.PlayerRemoving:Connect(function(p)
+    if spyTracked[p] then spyTracked[p].bb:Destroy() spyTracked[p] = nil end
+end)
+-- Open the visualizer tab by default
+MainTab:openpage()
+
+player.CharacterAdded:Connect(function(char)
+    character = char
+    targetPlayer = player
+    stopVisualizer()
+end)
+-- Emote keybinds (only active while R6 Clone is running)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if not orbiting or not activePreset.r6Clone then return end
+    if input.KeyCode == Enum.KeyCode.E then activeEmote="Dance2";   emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.T then activeEmote="Pharaoh";  emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.Y then activeEmote="Vibe";     emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.U then activeEmote="Robot";    emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.R then activeEmote="ChillSway";emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.F then activeEmote="HeadPlay"; emoteStartTime=tick()
+    elseif input.KeyCode==Enum.KeyCode.G then activeEmote="StepTouch";emoteStartTime=tick()
+    end
+end)
+-- Anti Fling loop
+task.spawn(function()
+    while task.wait(0.3) do
+        if antiFlingEnabled then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= player and p.Character then
+                    for _, part in ipairs(p.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                            part.Massless = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+-- Steal Tools loop
+task.spawn(function()
+    while task.wait(0.1) do
+        if stealToolsEnabled and player.Character and player.Character:FindFirstChild("Humanoid") then
+            for _, j in ipairs(workspace:GetChildren()) do
+                if j:IsA("Tool") then
+                    player.Character.Humanoid:EquipTool(j)
+                end
+            end
+        end
+    end
+end)
+-- Live-reload active custom JSON preset (hot-swap when file changes on disk)
+task.spawn(function()
+    local lastContent = ""
+    while task.wait(1) do
+        if activePreset and activePreset.custom and activeCustomPresetName ~= "None" then
+            local filePath = "OpenViz/" .. activeCustomPresetName .. ".json"
+            if isfile and isfile(filePath) then
+                local ok, fileData = pcall(function() return readfile(filePath) end)
+                if ok and fileData ~= lastContent then
+                    local ok2, decoded = pcall(function() return HttpService:JSONDecode(fileData) end)
+                    if ok2 and decoded and decoded.Points and #decoded.Points > 0 then
+                        local ax, ay, az = 0, 0, 0
+                        local n = #decoded.Points
+                        for _, pt in ipairs(decoded.Points) do
+                            ax=ax+pt.pos.x; ay=ay+pt.pos.y; az=az+pt.pos.z
+                        end
+                        ax,ay,az = ax/n, ay/n, az/n
+                        for _, pt in ipairs(decoded.Points) do
+                            pt.pos.x=pt.pos.x-ax; pt.pos.y=pt.pos.y-ay; pt.pos.z=pt.pos.z-az
+                        end
+                        activePreset.Points = decoded.Points
+                        lastContent = fileData
+                        print("OpenViz: Live-reloaded -> " .. activeCustomPresetName)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+    if not orbiting or not player.Character then return end
+    -- Stop if any tool escaped to backpack
+    local lostTool = false
+    for tool, _ in pairs(tracked) do
+        if not tool.Parent or tool.Parent == player.Backpack then
+            lostTool = true; break
+        end
+    end
+    if lostTool then stopVisualizer(); print("boi a tool gone so i stop :heart:"); return end
+
+    local tChar = (targetPlayer and targetPlayer.Parent) and targetPlayer.Character or player.Character
+    local hrp   = tChar and tChar:FindFirstChild("HumanoidRootPart")
+    if not hrp or (tChar:FindFirstChild("Humanoid") and tChar.Humanoid.Health <= 0) then return end
+    local t = tick()
+    -- Audio visualizer radius boost
+    if audioVisualizerEnabled then
+        local loudness = getMaxLoudness()
+        local activeMaxBoost = maxRadiusBoost * visualizerSensitivity
+        currentRadiusBoost = currentRadiusBoost
+            + ((loudness > loudnessThreshold
+                and math.min((loudness - loudnessThreshold) / 450, 1) * activeMaxBoost
+                or 0)
+               - currentRadiusBoost) * smoothingFactor
+    else
+        currentRadiusBoost = 0
+    end
+    -- ---- R6 Clone / Wheel Clone physics ----
+    local headSpin, headTilt, torsoTwist, rArmPitch, rArmRoll, lArmPitch, lArmRoll = 0, 0, 0, 0, 0, 0, 0
+    local rLegPitch, lLegPitch, extraBob, extraY = 0, 0, 0, 0
+    local headX, headY, headZ, torsoPitch, torsoRoll, rLegRoll, lLegRoll = 0, 0, 0, 0, 0, 0, 0
+    local isMoving, swing, bob = false, 0, 0
+
+    if (activePreset.r6Clone or activePreset.wheelClone) and targetPlayer == player then
+        local cam = workspace.CurrentCamera
+        local moveDir = Vector3.new()
+        local manualInput = false
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir += cam.CFrame.LookVector;  manualInput=true end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir -= cam.CFrame.LookVector;  manualInput=true end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir -= cam.CFrame.RightVector; manualInput=true end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir += cam.CFrame.RightVector; manualInput=true end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then manualInput=true end
+
+        if manualInput then activeEmote=nil; timeIdle=0 else timeIdle=timeIdle+dt end
+
+        moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
+        if moveDir.Magnitude > 0.01 then
+            moveDir = moveDir.Unit
+            cloneLook = cloneLook:Lerp(moveDir, 15*dt)
+        end
+
+        local targetSpeed = moveDir * (8 * currentSpeed)
+        cloneVel = Vector3.new(
+            cloneVel.X + (targetSpeed.X - cloneVel.X) * 15 * dt,
+            cloneVel.Y - workspace.Gravity * dt,
+            cloneVel.Z + (targetSpeed.Z - cloneVel.Z) * 15 * dt)
+
+        if activePreset.wheelClone then
+            local forwardSpeed = Vector3.new(cloneVel.X, 0, cloneVel.Z):Dot(cloneLook)
+            wheelRollAngle = wheelRollAngle - (forwardSpeed * dt / math.max(0.5, currentSize))
+        end
+
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        local filterList = {character}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player and p.Character then table.insert(filterList, p.Character) end
+        end
+        for tool, _ in pairs(tracked) do table.insert(filterList, tool) end
+        rayParams.FilterDescendantsInstances = filterList
+
+        cloneOnGround = false
+        local verticalOffset = activePreset.wheelClone and math.max(1, currentSize) or 4
+        local ray = workspace:Raycast(clonePos + Vector3.new(0,3,0), Vector3.new(0,-10,0), rayParams)
+        if ray then
+            local targetY = ray.Position.Y + verticalOffset
+            if cloneVel.Y <= 0.1 and clonePos.Y <= targetY+1 then
+                clonePos = Vector3.new(clonePos.X, targetY, clonePos.Z)
+                cloneVel = Vector3.new(cloneVel.X, 0, cloneVel.Z)
+                cloneOnGround = true
+            end
+        end
+
+        if cloneOnGround and UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            cloneVel = Vector3.new(cloneVel.X, 50, cloneVel.Z)
+            cloneOnGround = false
+            clonePos += Vector3.new(0, 0.5, 0)
+        end
+
+        clonePos += cloneVel * dt
+        camPart.CFrame = CFrame.new(clonePos + Vector3.new(0, 3, 0))
+
+        isMoving = Vector3.new(cloneVel.X, 0, cloneVel.Z).Magnitude > 2
+
+        if not cloneOnGround then swing = 0.5
+        elseif isMoving then
+            swing = math.sin(t*10) * 0.8
+            bob   = math.abs(math.sin(t*10)) * 0.1
+        else
+            swing = math.sin(t*2) * 0.08
+            bob   = math.sin(t*2) * 0.05
+        end
+        -- Emote math (computed once per frame, not per tool)
+        if activeEmote == "Dance2" then
+            local eTime = t - emoteStartTime
+            local sway = math.sin(eTime*4)
+            torsoRoll = sway*0.15; extraBob = math.abs(math.sin(eTime*8))*0.2
+            rArmPitch = math.rad(90); rArmRoll = math.rad(45)+sway*0.6
+            lArmPitch = math.rad(90); lArmRoll = math.rad(-45)+sway*0.6
+            rLegRoll  = sway*0.1;    lLegRoll = sway*0.1; headTilt = -sway*0.1
+        elseif activeEmote == "ChillSway" then
+            local eTime = t - emoteStartTime
+            local sway = math.sin(eTime*2)
+            torsoRoll = sway*0.1; headTilt = -sway*0.05
+            rArmPitch = math.rad(10)-sway*0.1; rArmRoll = math.rad(-5)
+            lArmPitch = math.rad(10)+sway*0.1; lArmRoll = math.rad(5)
+            rLegPitch = sway*0.05; lLegPitch = -sway*0.05
+        elseif activeEmote == "Vibe" then
+            local eTime = t - emoteStartTime
+            local beat = math.sin(eTime*5)
+            headTilt = math.rad(15)+beat*0.1; extraBob = math.abs(math.sin(eTime*5))*0.15
+            rArmPitch = math.rad(20); rArmRoll = math.rad(-15)
+            lArmPitch = math.rad(20); lArmRoll = math.rad(15)
+            torsoRoll = beat*0.05
+        elseif activeEmote == "StepTouch" then
+            local eTime = t - emoteStartTime
+            local step = math.sin(eTime*3)
+            torsoTwist = step*0.2; extraBob = math.abs(math.sin(eTime*6))*0.2
+            rArmPitch = math.rad(45)+math.sin(eTime*6)*0.2; rArmRoll = math.rad(-20)
+            lArmPitch = math.rad(45)+math.sin(eTime*6)*0.2; lArmRoll = math.rad(20)
+        elseif activeEmote == "Pharaoh" then
+            local eTime = t - emoteStartTime
+            local wave = math.sin(eTime*4)
+            torsoTwist = math.rad(40); headSpin = math.rad(-40)
+            extraBob = math.abs(math.sin(eTime*8))*0.2
+            rArmPitch = math.rad(45)+wave*math.rad(45); rArmRoll = math.rad(45)
+            lArmPitch = math.rad(45)-wave*math.rad(45); lArmRoll = math.rad(-45)
+        elseif activeEmote == "Robot" then
+            local eTime = t - emoteStartTime
+            local snap = math.floor(eTime*5)/5
+            headSpin  = math.sin(snap*3)*0.6
+            rArmPitch = math.rad(90)+math.sin(snap*5)*0.5
+            lArmPitch = math.rad(90)+math.cos(snap*5)*0.5
+            torsoTwist = math.cos(snap*2)*0.3
+        elseif activeEmote == "HeadPlay" then
+            local eTime = t - emoteStartTime
+            local cycle = eTime % 5
+            if cycle < 1 then
+                rArmPitch = math.rad(150)*cycle; rArmRoll = math.rad(-20)*cycle
+            elseif cycle < 2.5 then
+                rArmPitch = math.rad(150)+math.sin(t*15)*0.1
+                headX = 1.2; headY = -1.2+math.sin(t*15)*0.3; headZ = -0.5
+            elseif cycle < 3.5 then
+                local tTime = cycle-2.5
+                rArmPitch = math.rad(150)-math.rad(150)*tTime
+                headX = 1.2*(1-tTime); headY = 4*math.sin(tTime*math.pi)
+                headZ = -0.5*(1-tTime); headSpin = tTime*math.pi*6
+            else
+                rArmPitch = math.rad(135); rArmRoll = math.rad(45)
+                lArmPitch = math.rad(135); lArmRoll = math.rad(-45)
+                headY = math.sin(t*5)*0.1
+            end
+        elseif activeEmote == nil and timeIdle > 10 then
+            local p = timeIdle - 10
+            if p < 5 then
+                headSpin = math.sin(p*2)*0.6
+                if p > 1 and p < 4 then rArmPitch = math.rad(135)+math.sin(p*12)*0.4; rArmRoll = math.rad(-20) end
+            else
+                timeIdle = 0
+            end
+        end
+    end
+    -- ---- Per-tool positioning ----
+    for tool, data in pairs(tracked) do
+        local h = data.handle
+        if not (h and h.Parent) then
+            untrackAndDestroy(tool)
+        else
+            safePcall(function()
+                h.Massless = true
+                h.CanCollide = false
+                if netlessEnabled and data.netlessAllowed then
+                    h.AssemblyLinearVelocity = netlessVector
+                end
+            end)
+
+            local tPos, tRot
+            -- ---- Custom JSON preset path ---- do you like how gemini wrote this?
+            if activePreset.custom then
+                local pts = activePreset.Points
+                local num = #pts
+                if num > 0 then
+                    local p_speed     = activePreset.Speed   or 1
+                    local tension     = activePreset.Tension or 0.5
+                    local totalTracked = math.max(1, countTracked())
+
+                    local time_val = (t * 0.1 * p_speed * currentSpeed) % 1
+                    local prog     = (time_val + (data.index / totalTracked)) % 1
+                    local idx      = prog * num
+
+                    local p1 = math.floor(idx) % num + 1
+                    local p2 = (p1 % num) + 1
+                    local p0 = (p1 - 2 + num) % num + 1
+                    local p3 = (p2 % num) + 1
+                    local alpha = idx % 1
+
+                    local function getCf(id)
+                        local pt = pts[id]
+                        return CFrame.new(pt.pos.x, pt.pos.y, pt.pos.z)
+                             * CFrame.Angles(pt.rot.x, pt.rot.y, pt.rot.z)
+                    end
+
+                    local localCf = getSplineCFrame(alpha, getCf(p0), getCf(p1), getCf(p2), getCf(p3), tension)
+                    local radiusMultiplier = 1 + (currentRadiusBoost / 5)
+                    local scaledPos = localCf.Position * (currentSize * 0.2) * radiusMultiplier
+                    local finalLocalCf = CFrame.new(scaledPos + Vector3.new(0, currentHeight, 0)) * localCf.Rotation
+                    local finalCFrame  = hrp.CFrame * finalLocalCf
+                    tPos = finalCFrame.Position
+                    tRot = finalCFrame
+                else
+                    tPos = hrp.Position
+                    tRot = hrp.CFrame
+                end
+            -- ---- R6 Clone preset path ----
+            elseif activePreset.r6Clone then
+                local map = data.index % 7
+                if map == 0 then map = 7 end
+                local rootRot     = CFrame.lookAt(clonePos, clonePos + cloneLook)
+                local upperBodyRot = CFrame.Angles(torsoPitch, torsoTwist, torsoRoll)
+                local offset = CFrame.new()
+                if map==1 then offset = CFrame.new(0,0.25+bob+extraBob+extraY,0)*upperBodyRot*CFrame.Angles(0,0,math.rad(180))
+                elseif map==2 then offset = CFrame.new(0,-0.75+bob+extraBob+extraY,0)*upperBodyRot
+                elseif map==3 then offset = CFrame.new(headX,2.2+bob+extraBob+extraY+headY,headZ)*upperBodyRot*CFrame.Angles(headTilt,headSpin,0)
+                elseif map==4 then offset = upperBodyRot*CFrame.new(1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(swing+rArmPitch,0,rArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
+                elseif map==5 then offset = upperBodyRot*CFrame.new(-1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(-swing+lArmPitch,0,lArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
+                elseif map==6 then offset = CFrame.new(0.6,-1.5,0)*CFrame.Angles((isMoving and -swing or -swing*0.5)+rLegPitch,0,rLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
+                elseif map==7 then offset = CFrame.new(-0.6,-1.5,0)*CFrame.Angles((isMoving and swing or swing*0.5)+lLegPitch,0,lLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
+                end
+                local finalCFrame = rootRot * offset
+                tPos = finalCFrame.Position
+                tRot = finalCFrame
+            -- ---- Wheel Clone preset path ----
+            elseif activePreset.wheelClone then
+                local total = math.max(1, countTracked())
+                local angle = (math.pi*2/total) * (data.index-1)
+                local rootRot   = CFrame.lookAt(clonePos, clonePos+cloneLook)
+                                * CFrame.Angles(0, 0, isMoving and 0 or (math.sin(t*1.5)*0.08))
+                local centerPos = rootRot * CFrame.new(0, (isMoving and 0 or math.sin(t*3)*0.1)+0.5, 0)
+                local rollCFrame = centerPos * CFrame.Angles(wheelRollAngle, 0, 0)
+                local finalCFrame = rollCFrame * CFrame.Angles(angle,0,0)
+                                  * CFrame.new(0, currentSize, 0)
+                                  * CFrame.Angles(0, math.rad(90), 0)
+                tPos = finalCFrame.Position
+                tRot = finalCFrame
+            -- ---- All other built-in presets ----
+            else
+                tPos = computeTargetPos(data.index, t, hrp)
+                local tLP = getTargetLookPos(data.index, hrp)
+                if activePreset.layered then
+                    local layer = math.floor((data.index-1)/8)
+                    local layerHeight = currentHeight + (layer*4)
+                    local centerPos = hrp.CFrame:PointToWorldSpace(Vector3.new(0, layerHeight, 0))
+                    tRot = CFrame.lookAt(tPos, centerPos)
+                elseif activePreset.theThing and data.index > 1 then
+                    tRot = (tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position))
+                         * CFrame.Angles(0, math.rad(90), 0)
+                else
+                    tRot = tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position)
+                end
+                if activePreset.rolling and not lookLocked and not activePreset.wingsV2 then
+                    tRot = CFrame.new(tPos, hrp.Position)
+                         * CFrame.Angles((tPos - hrp.Position).Magnitude * 0.85, 0, 0)
+                end
+                if activePreset.knot or activePreset.torusKnot or activePreset.lissajous then
+                    tRot = tRot * CFrame.Angles(data.index*0.5, data.index*0.3, data.index*0.7)
+                end
+            end
+            safePcall(function()
+                data.alignPos.Position = tPos + Vector3.new(math.random()*0.01-0.005, 0, 0)
+                data.alignRot.CFrame   = tRot
+            end)
+        end
+    end
+end)
