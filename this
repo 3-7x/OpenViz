@@ -5,7 +5,9 @@ print("\n \n Wlcme t o Openviz brah :heart: \n Press J to access Preset Maker!!!
 ]]
 -- preset maker, press "J"
 loadstring(game:HttpGet("https://pastefy.app/fdfMWMok/raw"))()
---
+--[[
+son why is everything on github and preset maker is on pastefy son
+]]
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -427,7 +429,7 @@ local function getTargetLookPos(index, hrp)
     return nil
 end
 
-local libary = loadstring(game:HttpGet("https://pastefy.app/emjSZ0kC/raw"))()
+local libary = loadstring(game:HttpGet("https://raw.githubusercontent.com/3-7x/puppyware-but-size-diffrent/refs/heads/main/p"))()
 local Window  = libary:new({name = "OpenViz", accent = Color3.fromRGB(90, 160, 255), textsize = 13})
 local MainTab = Window:page({name = "Visualizer"})
 local MiscTab = Window:page({name = "Misc"})
