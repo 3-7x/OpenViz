@@ -1,13 +1,11 @@
-print("\n \n Wlcme t o Openviz brah :heart: \n Press J to access Preset Maker!!!!!!!!!!! \n \n")
+print("\n \n Wlcme t o Openviz brah :heart: \n Press P to access Preset Maker!!!!!!!!!!! \n \n")
 --[[
   Yo  ~ 1954real
              tuff
 ]]
--- preset maker, press "J"
-loadstring(game:HttpGet("https://pastefy.app/fdfMWMok/raw"))()
---[[
-son why is everything on github and preset maker is on pastefy son
-]]
+-- preset maker, press "P"
+loadstring(game:HttpGet("https://raw.githubusercontent.com/3-7x/Preset-Maker/refs/heads/main/pm"))()
+--
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -17,6 +15,7 @@ local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 
 local orbiting = false
+local orbitStartTime = tick()
 local tracked = {}
 local idxCounter = 0
 local lookLocked = false
@@ -82,13 +81,64 @@ local orbitPresets = {
 local activePresetName = "Circle"
 local activePreset = orbitPresets[activePresetName]
 
-local customPresets = {}           -- name -> decoded table
-local customPresetNames = {"None"} -- list for dropdown
-local CustomPresetsDropdown = nil  -- captured UI element reference
+local customPresets = {}
+local customPresetNames = {"None"}
+local CustomPresetsDropdown = nil
 
--- Reads all .json files from the OpenViz/ folder, auto-centers them,
--- and populates the customPresets table + customPresetNames list.
--- there is noBODY reading ts.
+local function buildNodeMap(preset)
+    local map = {}
+    for _, node in ipairs(preset.Nodes or {}) do map[node.ID] = node end
+    for _, tool in ipairs(preset.Tools or {}) do map[tool.ID] = tool end
+    return map
+end
+
+-- Evaluates the world CFrame of a node recursively, applying audio-reactive
+-- scaling to Tool nodes and Y-spin to Rotator nodes.
+local function getNodeWorldCF(nodeID, t, nodeMap, memo, hrpCF, audioPulse)
+    if memo[nodeID] then return memo[nodeID] end
+
+    if nodeID == "HRP" then
+        memo["HRP"] = hrpCF
+        return hrpCF
+    end
+
+    local node = nodeMap[nodeID]
+    if not node then
+        memo[nodeID] = CFrame.new()
+        return CFrame.new()
+    end
+
+    local parentCF = getNodeWorldCF(node.ParentID, t, nodeMap, memo, hrpCF, audioPulse)
+
+    local effectiveSens = 0
+    -- Tools pulse; Rotators (have .Speed) do not.
+    if node.Speed == nil then
+        local parentNode = nodeMap[node.ParentID]
+        if parentNode and parentNode.Sens ~= nil then
+            effectiveSens = tonumber(parentNode.Sens) or 0
+        elseif node.Sens ~= nil then
+            effectiveSens = tonumber(node.Sens) or 0
+        end
+    end
+
+    local pulseMult = 1 + ((audioPulse / 5) * (effectiveSens / 100))
+    local relPos = Vector3.new(node.pos.x, node.pos.y, node.pos.z) * pulseMult
+    local relCF  = CFrame.new(relPos) * CFrame.Angles(node.rot.x, node.rot.y, node.rot.z)
+
+    local worldCF
+    if node.Speed ~= nil then
+        local spd = (node.Speed or 2) * currentSpeed * 0.15
+        worldCF = parentCF * relCF * CFrame.Angles(0, t * spd, 0)
+    else
+        worldCF = parentCF * relCF
+    end
+
+    memo[nodeID] = worldCF
+    return worldCF
+end
+
+-- Reads all .json files from the OpenViz/ folder.
+-- Accepts ONLY the new NodeGraph format. Old spline files get a clear warning.
 local function refreshCustomPresets()
     table.clear(customPresets)
     table.clear(customPresetNames)
@@ -100,67 +150,64 @@ local function refreshCustomPresets()
                 local ok, fileData = pcall(function() return readfile(filePath) end)
                 if ok then
                     local ok2, decoded = pcall(function() return HttpService:JSONDecode(fileData) end)
-                    if ok2 and decoded and decoded.Points and #decoded.Points > 0 then
-
-                        -- Auto-center: subtract the average offset so the
-                        -- preset plays relative to the HRP instead of some
-                        -- arbitrary world position it was built at.
-                        local ax, ay, az = 0, 0, 0
-                        local n = #decoded.Points
-                        for _, pt in ipairs(decoded.Points) do
-                            ax = ax + pt.pos.x
-                            ay = ay + pt.pos.y
-                            az = az + pt.pos.z
-                        end
-                        ax, ay, az = ax/n, ay/n, az/n
-                        for _, pt in ipairs(decoded.Points) do
-                            pt.pos.x = pt.pos.x - ax
-                            pt.pos.y = pt.pos.y - ay
-                            pt.pos.z = pt.pos.z - az
-                        end
-
+                    if ok2 and decoded and decoded.Type == "NodeGraph" and decoded.Nodes and decoded.Tools then
                         local name = decoded.Name or filePath:match("([^/\\]+)%.json$")
+                        decoded._nodeMap = buildNodeMap(decoded)
                         customPresets[name] = decoded
                         table.insert(customPresetNames, name)
-                        print("OpenViz: Loaded custom preset -" .. name)
+                        print("OpenViz: Loaded NodeGraph preset -> " .. name)
+                    elseif ok2 and decoded then
+                        if decoded.Points then
+                            warn("OpenViz: '" .. (filePath:match("([^/\\]+)%.json$") or filePath)
+                                .. "' uses the OLD spline format. Re-export it from the new Preset Builder.")
+                        else
+                            warn("OpenViz: Unrecognised preset format in " .. filePath)
+                        end
                     end
                 end
             end
         end
     end
 
-    -- If the dropdown UI element already exists, tell it to refresh.
     if CustomPresetsDropdown then
         pcall(function() CustomPresetsDropdown:Refresh(customPresetNames) end)
-        pcall(function() CustomPresetsDropdown:update(customPresetNames) end)
-        pcall(function() CustomPresetsDropdown:Update(customPresetNames) end)
+        pcall(function() CustomPresetsDropdown:update(customPresetNames)  end)
+        pcall(function() CustomPresetsDropdown:Update(customPresetNames)  end)
     end
 end
 refreshCustomPresets()
 
--- Tracks the currently active custom preset name (separate from the
--- built-in preset dropdown so they don't stomp each other).
 local activeCustomPresetName = "None"
 
+task.spawn(function()
+    local lastContent = ""
+    while task.wait(1) do
+        if activePreset and activePreset.Type == "NodeGraph" and activeCustomPresetName ~= "None" then
+            local filePath = "OpenViz/" .. activeCustomPresetName .. ".json"
+            if isfile and isfile(filePath) then
+                local ok, fileData = pcall(readfile, filePath)
+                if ok and fileData ~= lastContent then
+                    local ok2, decoded = pcall(function() return HttpService:JSONDecode(fileData) end)
+                    if ok2 and decoded and decoded.Type == "NodeGraph" and decoded.Nodes and decoded.Tools then
+                        decoded._nodeMap = buildNodeMap(decoded)
+                        activePreset.Nodes    = decoded.Nodes
+                        activePreset.Tools    = decoded.Tools
+                        activePreset._nodeMap = decoded._nodeMap
+                        lastContent = fileData
+                        print("OpenViz: Live-reloaded -> " .. activeCustomPresetName)
+                    else
+                        warn("OpenViz: Live-reload failed for " .. activeCustomPresetName .. " — check JSON syntax / NodeGraph format.")
+                    end
+                end
+            end
+        end
+    end
+end)
 local function safePcall(fn, ...) return pcall(fn, ...) end
 local function countTracked()
     local n = 0
     for _ in pairs(tracked) do n = n + 1 end
     return n
-end
-
--- Catmull-Rom spline interpolation used by custom JSON presets.
-local function getSplineCFrame(t, p0, p1, p2, p3, s)
-    local function spline(t, v0, v1, v2, v3)
-        local t2, t3 = t*t, t*t*t
-        local tension = (1 - s) * 0.5
-        return v1
-            + t  * (tension * (v2 - v0))
-            + t2 * (2*tension*v0 + (tension-3)*v1 + (3-2*tension)*v2 - tension*v3)
-            + t3 * (-tension*v0 + (2-tension)*v1 + (tension-2)*v2 + tension*v3)
-    end
-    return CFrame.new(spline(t, p0.Position, p1.Position, p2.Position, p3.Position))
-         * p1.Rotation:Lerp(p2.Rotation, t)
 end
 
 -- Loudness polling — checks all tracked tools AND the local character.
@@ -434,7 +481,7 @@ local Window  = libary:new({name = "OpenViz", accent = Color3.fromRGB(90, 160, 2
 local MainTab = Window:page({name = "Visualizer"})
 local MiscTab = Window:page({name = "Misc"})
 
-local ControlsSec = MainTab:section({name = "Controls",  side = "left",  size = 230})
+local ControlsSec = MainTab:section({name = "Controls",  side = "left",  size = 250})
 local SettingsSec = MainTab:section({name = "Settings",  side = "right", size = 290})
 local MiscSec     = MiscTab:section({name = "hi yo",     side = "left",  size = 200})
 
@@ -449,7 +496,7 @@ SettingsSec:dropdown({
     max = 5,
     options = presetOptions,
     callback = function(val)
-        -- Switching to a built-in preset clears any active custom preset.
+
         activePresetName = val
         activePreset = orbitPresets[val]
         activeCustomPresetName = "None"
@@ -481,32 +528,25 @@ SettingsSec:dropdown({
     callback = function(val)
         activeCustomPresetName = val
         if val == "None" then
-            -- Fall back to whatever built-in preset is currently selected.
             activePreset = orbitPresets[activePresetName]
         else
             local cp = customPresets[val]
             if cp then
-                -- Build a pseudo-preset table that the heartbeat loop
-                -- recognises via the .custom flag.
-                activePreset = {
-                    custom  = true,
-                    Points  = cp.Points,
-                    Tension = cp.Tension or 0.5,
-                    Speed   = cp.Speed   or 1,
-                }
-                print("Switched to custom preset -" .. val)
+
+                activePreset = cp
+                activePreset.custom = true
+                print("Switched to custom preset -> " .. val)
             end
         end
     end,
-    -- Capture the dropdown object so refreshCustomPresets() can update it later.
     oncreate = function(obj) CustomPresetsDropdown = obj end
 })
--- Refresh button so the user can reload presets without re-running the script THIS DOESNT FUCKING WORK
+
 SettingsSec:button({
     name = "Refresh",
     callback = function()
         refreshCustomPresets()
-        print("OpenViz: Custom presets refreshed. Found " .. (#customPresetNames - 1) .. " preset(s)." .. " \n Yeah this prob didnt do anything lmao, if it did so wow. just re execute the script.. \n")
+        print("OpenViz: Custom presets refreshed. Found " .. (#customPresetNames - 1) .. " preset(s).")
     end
 })
 
@@ -542,12 +582,41 @@ ControlsSec:textbox({name="Audio ID", def="", callback=function(text)
     end
 end})
 
-ControlsSec:button({name="Sync Audio", callback=function()
+ControlsSec:button({name = "Sync Audio", callback = function()
     if not audioId then return end
-    if player.Character then
-        for _, tool in ipairs(player.Character:GetChildren()) do
-            if tool:IsA("Tool") and tool:FindFirstChild("Remote") then
-                tool.Remote:FireServer("PlaySong", audioId)
+    local char = player.Character
+    if not char then return end
+
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then
+            local remote = tool:FindFirstChild("Remote")
+            if remote then
+                remote:FireServer("PlaySong", audioId)
+            end
+        end
+    end
+end})
+
+ControlsSec:button({name = "Mass Play", callback = function()
+    if not audioId then return end
+    local char = player.Character
+    if not char then return end
+
+    local backpack = player:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then 
+                tool.Parent = char 
+            end
+        end
+    end
+    task.wait(0.4)
+
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then
+            local remote = tool:FindFirstChild("Remote")
+            if remote then
+                remote:FireServer("PlaySong", audioId)
             end
         end
     end
@@ -599,10 +668,11 @@ ControlsSec:button({name="Start Dupe", callback=function()
         print("yo dupe donezo brah :heart:")
     end)
 end})
--- THIS PART IS LIKE SO IMPORTANT
+
 ControlsSec:button({name="Visualize", callback=function()
     stopVisualizer()
     orbiting = true
+    orbitStartTime = tick()
     idxCounter = 0
     sessionSeed = math.random(1, 100000)
     setToolAnim("rbxassetid://0")
@@ -777,6 +847,7 @@ end})
 MiscSec:button({name="Useless Button", callback=function(b)
 print("This was gonna be the destroy gui button but nah")
 end})
+
 -- Audio Spy heartbeat
 RunService.Heartbeat:Connect(function()
     if not audioSpyEnabled or not player.Character then return end
@@ -830,6 +901,7 @@ end)
 Players.PlayerRemoving:Connect(function(p)
     if spyTracked[p] then spyTracked[p].bb:Destroy() spyTracked[p] = nil end
 end)
+
 -- Open the visualizer tab by default
 MainTab:openpage()
 
@@ -838,6 +910,7 @@ player.CharacterAdded:Connect(function(char)
     targetPlayer = player
     stopVisualizer()
 end)
+
 -- Emote keybinds (only active while R6 Clone is running)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
@@ -851,6 +924,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif input.KeyCode==Enum.KeyCode.G then activeEmote="StepTouch";emoteStartTime=tick()
     end
 end)
+
 -- Anti Fling loop
 task.spawn(function()
     while task.wait(0.3) do
@@ -868,6 +942,7 @@ task.spawn(function()
         end
     end
 end)
+
 -- Steal Tools loop
 task.spawn(function()
     while task.wait(0.1) do
@@ -880,38 +955,10 @@ task.spawn(function()
         end
     end
 end)
--- Live-reload active custom JSON preset (hot-swap when file changes on disk)
-task.spawn(function()
-    local lastContent = ""
-    while task.wait(1) do
-        if activePreset and activePreset.custom and activeCustomPresetName ~= "None" then
-            local filePath = "OpenViz/" .. activeCustomPresetName .. ".json"
-            if isfile and isfile(filePath) then
-                local ok, fileData = pcall(function() return readfile(filePath) end)
-                if ok and fileData ~= lastContent then
-                    local ok2, decoded = pcall(function() return HttpService:JSONDecode(fileData) end)
-                    if ok2 and decoded and decoded.Points and #decoded.Points > 0 then
-                        local ax, ay, az = 0, 0, 0
-                        local n = #decoded.Points
-                        for _, pt in ipairs(decoded.Points) do
-                            ax=ax+pt.pos.x; ay=ay+pt.pos.y; az=az+pt.pos.z
-                        end
-                        ax,ay,az = ax/n, ay/n, az/n
-                        for _, pt in ipairs(decoded.Points) do
-                            pt.pos.x=pt.pos.x-ax; pt.pos.y=pt.pos.y-ay; pt.pos.z=pt.pos.z-az
-                        end
-                        activePreset.Points = decoded.Points
-                        lastContent = fileData
-                        print("OpenViz: Live-reloaded -> " .. activeCustomPresetName)
-                    end
-                end
-            end
-        end
-    end
-end)
 
 RunService.Heartbeat:Connect(function(dt)
     if not orbiting or not player.Character then return end
+
     -- Stop if any tool escaped to backpack
     local lostTool = false
     for tool, _ in pairs(tracked) do
@@ -924,7 +971,9 @@ RunService.Heartbeat:Connect(function(dt)
     local tChar = (targetPlayer and targetPlayer.Parent) and targetPlayer.Character or player.Character
     local hrp   = tChar and tChar:FindFirstChild("HumanoidRootPart")
     if not hrp or (tChar:FindFirstChild("Humanoid") and tChar.Humanoid.Health <= 0) then return end
-    local t = tick()
+
+    local t = tick() - orbitStartTime
+
     -- Audio visualizer radius boost
     if audioVisualizerEnabled then
         local loudness = getMaxLoudness()
@@ -937,7 +986,7 @@ RunService.Heartbeat:Connect(function(dt)
     else
         currentRadiusBoost = 0
     end
-    -- ---- R6 Clone / Wheel Clone physics ----
+
     local headSpin, headTilt, torsoTwist, rArmPitch, rArmRoll, lArmPitch, lArmRoll = 0, 0, 0, 0, 0, 0, 0
     local rLegPitch, lLegPitch, extraBob, extraY = 0, 0, 0, 0
     local headX, headY, headZ, torsoPitch, torsoRoll, rLegRoll, lLegRoll = 0, 0, 0, 0, 0, 0, 0
@@ -1013,7 +1062,8 @@ RunService.Heartbeat:Connect(function(dt)
             swing = math.sin(t*2) * 0.08
             bob   = math.sin(t*2) * 0.05
         end
-        -- Emote math (computed once per frame, not per tool)
+
+        -- Emote math
         if activeEmote == "Dance2" then
             local eTime = t - emoteStartTime
             local sway = math.sin(eTime*4)
@@ -1083,115 +1133,127 @@ RunService.Heartbeat:Connect(function(dt)
             end
         end
     end
-    -- ---- Per-tool positioning ----
-    for tool, data in pairs(tracked) do
-        local h = data.handle
-        if not (h and h.Parent) then
-            untrackAndDestroy(tool)
-        else
-            safePcall(function()
-                h.Massless = true
-                h.CanCollide = false
-                if netlessEnabled and data.netlessAllowed then
-                    h.AssemblyLinearVelocity = netlessVector
-                end
-            end)
 
-            local tPos, tRot
-            -- ---- Custom JSON preset path ---- do you like how gemini wrote this?
-            if activePreset.custom then
-                local pts = activePreset.Points
-                local num = #pts
-                if num > 0 then
-                    local p_speed     = activePreset.Speed   or 1
-                    local tension     = activePreset.Tension or 0.5
-                    local totalTracked = math.max(1, countTracked())
+    if activePreset and activePreset.custom and activePreset.Type == "NodeGraph" then
+        local nodeMap  = activePreset._nodeMap
+        local tools    = activePreset.Tools or {}
+        local numSlots = #tools
+        local audioPulse = currentRadiusBoost
 
-                    local time_val = (t * 0.1 * p_speed * currentSpeed) % 1
-                    local prog     = (time_val + (data.index / totalTracked)) % 1
-                    local idx      = prog * num
+        local toolSlots = {}
+        for i, toolEntry in ipairs(tools) do toolSlots[i] = toolEntry end
 
-                    local p1 = math.floor(idx) % num + 1
-                    local p2 = (p1 % num) + 1
-                    local p0 = (p1 - 2 + num) % num + 1
-                    local p3 = (p2 % num) + 1
-                    local alpha = idx % 1
+        local memo = {}
 
-                    local function getCf(id)
-                        local pt = pts[id]
-                        return CFrame.new(pt.pos.x, pt.pos.y, pt.pos.z)
-                             * CFrame.Angles(pt.rot.x, pt.rot.y, pt.rot.z)
+        for tool, data in pairs(tracked) do
+            local h = data.handle
+            if not (h and h.Parent) then
+                untrackAndDestroy(tool)
+            else
+                safePcall(function()
+                    h.Massless = true
+                    h.CanCollide = false
+                    if netlessEnabled and data.netlessAllowed then
+                        h.AssemblyLinearVelocity = netlessVector
                     end
+                end)
 
-                    local localCf = getSplineCFrame(alpha, getCf(p0), getCf(p1), getCf(p2), getCf(p3), tension)
-                    local radiusMultiplier = 1 + (currentRadiusBoost / 5)
-                    local scaledPos = localCf.Position * (currentSize * 0.2) * radiusMultiplier
-                    local finalLocalCf = CFrame.new(scaledPos + Vector3.new(0, currentHeight, 0)) * localCf.Rotation
-                    local finalCFrame  = hrp.CFrame * finalLocalCf
-                    tPos = finalCFrame.Position
-                    tRot = finalCFrame
+                local tPos, tRot
+
+                if numSlots > 0 then
+                    local slotIdx  = ((data.index - 1) % numSlots) + 1
+                    local slotTool = toolSlots[slotIdx]
+                    local boomCF   = getNodeWorldCF(slotTool.ID, t, nodeMap, memo, hrp.CFrame, audioPulse)
+                    local finalPos = boomCF.Position + Vector3.new(0, currentHeight, 0)
+                    tPos = finalPos
+                    tRot = CFrame.new(finalPos) * boomCF.Rotation
                 else
-                    tPos = hrp.Position
+                    tPos = hrp.Position + Vector3.new(0, currentHeight + 3, 0)
                     tRot = hrp.CFrame
                 end
-            -- ---- R6 Clone preset path ----
-            elseif activePreset.r6Clone then
-                local map = data.index % 7
-                if map == 0 then map = 7 end
-                local rootRot     = CFrame.lookAt(clonePos, clonePos + cloneLook)
-                local upperBodyRot = CFrame.Angles(torsoPitch, torsoTwist, torsoRoll)
-                local offset = CFrame.new()
-                if map==1 then offset = CFrame.new(0,0.25+bob+extraBob+extraY,0)*upperBodyRot*CFrame.Angles(0,0,math.rad(180))
-                elseif map==2 then offset = CFrame.new(0,-0.75+bob+extraBob+extraY,0)*upperBodyRot
-                elseif map==3 then offset = CFrame.new(headX,2.2+bob+extraBob+extraY+headY,headZ)*upperBodyRot*CFrame.Angles(headTilt,headSpin,0)
-                elseif map==4 then offset = upperBodyRot*CFrame.new(1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(swing+rArmPitch,0,rArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
-                elseif map==5 then offset = upperBodyRot*CFrame.new(-1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(-swing+lArmPitch,0,lArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
-                elseif map==6 then offset = CFrame.new(0.6,-1.5,0)*CFrame.Angles((isMoving and -swing or -swing*0.5)+rLegPitch,0,rLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
-                elseif map==7 then offset = CFrame.new(-0.6,-1.5,0)*CFrame.Angles((isMoving and swing or swing*0.5)+lLegPitch,0,lLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
-                end
-                local finalCFrame = rootRot * offset
-                tPos = finalCFrame.Position
-                tRot = finalCFrame
-            -- ---- Wheel Clone preset path ----
-            elseif activePreset.wheelClone then
-                local total = math.max(1, countTracked())
-                local angle = (math.pi*2/total) * (data.index-1)
-                local rootRot   = CFrame.lookAt(clonePos, clonePos+cloneLook)
-                                * CFrame.Angles(0, 0, isMoving and 0 or (math.sin(t*1.5)*0.08))
-                local centerPos = rootRot * CFrame.new(0, (isMoving and 0 or math.sin(t*3)*0.1)+0.5, 0)
-                local rollCFrame = centerPos * CFrame.Angles(wheelRollAngle, 0, 0)
-                local finalCFrame = rollCFrame * CFrame.Angles(angle,0,0)
-                                  * CFrame.new(0, currentSize, 0)
-                                  * CFrame.Angles(0, math.rad(90), 0)
-                tPos = finalCFrame.Position
-                tRot = finalCFrame
-            -- ---- All other built-in presets ----
-            else
-                tPos = computeTargetPos(data.index, t, hrp)
-                local tLP = getTargetLookPos(data.index, hrp)
-                if activePreset.layered then
-                    local layer = math.floor((data.index-1)/8)
-                    local layerHeight = currentHeight + (layer*4)
-                    local centerPos = hrp.CFrame:PointToWorldSpace(Vector3.new(0, layerHeight, 0))
-                    tRot = CFrame.lookAt(tPos, centerPos)
-                elseif activePreset.theThing and data.index > 1 then
-                    tRot = (tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position))
-                         * CFrame.Angles(0, math.rad(90), 0)
-                else
-                    tRot = tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position)
-                end
-                if activePreset.rolling and not lookLocked and not activePreset.wingsV2 then
-                    tRot = CFrame.new(tPos, hrp.Position)
-                         * CFrame.Angles((tPos - hrp.Position).Magnitude * 0.85, 0, 0)
-                end
-                if activePreset.knot or activePreset.torusKnot or activePreset.lissajous then
-                    tRot = tRot * CFrame.Angles(data.index*0.5, data.index*0.3, data.index*0.7)
-                end
+
+                safePcall(function()
+                    data.alignPos.Position = tPos + Vector3.new(math.random()*0.01-0.005, 0, 0)
+                    data.alignRot.CFrame   = tRot
+                end)
             end
-            safePcall(function()
-                data.alignPos.Position = tPos + Vector3.new(math.random()*0.01-0.005, 0, 0)
-                data.alignRot.CFrame   = tRot
-            end)
+        end
+
+    else
+        for tool, data in pairs(tracked) do
+            local h = data.handle
+            if not (h and h.Parent) then
+                untrackAndDestroy(tool)
+            else
+                safePcall(function()
+                    h.Massless = true
+                    h.CanCollide = false
+                    if netlessEnabled and data.netlessAllowed then
+                        h.AssemblyLinearVelocity = netlessVector
+                    end
+                end)
+
+                local tPos, tRot
+
+                if activePreset.r6Clone then
+                    local map = data.index % 7
+                    if map == 0 then map = 7 end
+                    local rootRot      = CFrame.lookAt(clonePos, clonePos + cloneLook)
+                    local upperBodyRot = CFrame.Angles(torsoPitch, torsoTwist, torsoRoll)
+                    local offset = CFrame.new()
+                    if map==1 then offset = CFrame.new(0,0.25+bob+extraBob+extraY,0)*upperBodyRot*CFrame.Angles(0,0,math.rad(180))
+                    elseif map==2 then offset = CFrame.new(0,-0.75+bob+extraBob+extraY,0)*upperBodyRot
+                    elseif map==3 then offset = CFrame.new(headX,2.2+bob+extraBob+extraY+headY,headZ)*upperBodyRot*CFrame.Angles(headTilt,headSpin,0)
+                    elseif map==4 then offset = upperBodyRot*CFrame.new(1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(swing+rArmPitch,0,rArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
+                    elseif map==5 then offset = upperBodyRot*CFrame.new(-1.8,1+bob+extraBob+extraY,0)*CFrame.Angles(-swing+lArmPitch,0,lArmRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
+                    elseif map==6 then offset = CFrame.new(0.6,-1.5,0)*CFrame.Angles((isMoving and -swing or -swing*0.5)+rLegPitch,0,rLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(90))
+                    elseif map==7 then offset = CFrame.new(-0.6,-1.5,0)*CFrame.Angles((isMoving and swing or swing*0.5)+lLegPitch,0,lLegRoll)*CFrame.new(0,-1.2,0)*CFrame.Angles(0,0,math.rad(-90))
+                    end
+                    local finalCFrame = rootRot * offset
+                    tPos = finalCFrame.Position
+                    tRot = finalCFrame
+
+                elseif activePreset.wheelClone then
+                    local total = math.max(1, countTracked())
+                    local angle = (math.pi*2/total) * (data.index-1)
+                    local rootRot   = CFrame.lookAt(clonePos, clonePos+cloneLook)
+                                    * CFrame.Angles(0, 0, isMoving and 0 or (math.sin(t*1.5)*0.08))
+                    local centerPos = rootRot * CFrame.new(0, (isMoving and 0 or math.sin(t*3)*0.1)+0.5, 0)
+                    local rollCFrame = centerPos * CFrame.Angles(wheelRollAngle, 0, 0)
+                    local finalCFrame = rollCFrame * CFrame.Angles(angle,0,0)
+                                      * CFrame.new(0, currentSize, 0)
+                                      * CFrame.Angles(0, math.rad(90), 0)
+                    tPos = finalCFrame.Position
+                    tRot = finalCFrame
+
+                else
+                    tPos = computeTargetPos(data.index, t, hrp)
+                    local tLP = getTargetLookPos(data.index, hrp)
+                    if activePreset.layered then
+                        local layer = math.floor((data.index-1)/8)
+                        local layerHeight = currentHeight + (layer*4)
+                        local centerPos = hrp.CFrame:PointToWorldSpace(Vector3.new(0, layerHeight, 0))
+                        tRot = CFrame.lookAt(tPos, centerPos)
+                    elseif activePreset.theThing and data.index > 1 then
+                        tRot = (tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position))
+                             * CFrame.Angles(0, math.rad(90), 0)
+                    else
+                        tRot = tLP and CFrame.new(tPos, tLP) or CFrame.new(tPos, hrp.Position)
+                    end
+                    if activePreset.rolling and not lookLocked and not activePreset.wingsV2 then
+                        tRot = CFrame.new(tPos, hrp.Position)
+                             * CFrame.Angles((tPos - hrp.Position).Magnitude * 0.85, 0, 0)
+                    end
+                    if activePreset.knot or activePreset.torusKnot or activePreset.lissajous then
+                        tRot = tRot * CFrame.Angles(data.index*0.5, data.index*0.3, data.index*0.7)
+                    end
+                end
+
+                safePcall(function()
+                    data.alignPos.Position = tPos + Vector3.new(math.random()*0.01-0.005, 0, 0)
+                    data.alignRot.CFrame   = tRot
+                end)
+            end
         end
     end
 end)
