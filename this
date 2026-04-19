@@ -32,7 +32,7 @@ local currentSpeed = 2
 local currentSize = 5
 local currentHeight = 3
 local netlessEnabled = true
-local netlessVector = Vector3.new(5, 0, -30)
+local netlessVector = Vector3.new(0,0,-31)
 local sessionSeed = math.random(1, 100000)
 
 local audioId = nil
@@ -680,7 +680,6 @@ ControlsSec:button({name="Visualize", callback=function()
     for _, jjj in ipairs(game.Players.LocalPlayer.Character:GetChildren()) do
         if jjj:IsA("Tool") then jjj.Parent = game.Players.LocalPlayer.Backpack end
     end
-    task.wait(0.1954)
 
     if (activePreset.r6Clone or activePreset.wheelClone)
     and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -704,14 +703,14 @@ ControlsSec:button({name="Visualize", callback=function()
             if tool:IsA("Tool") then tool.Parent = player.Character end
         end
     end
-    task.wait(0.1954)
     for _, jjj in ipairs(game.Players.LocalPlayer.Character:GetChildren()) do
         if jjj:IsA("Tool") then jjj.Parent = game.Players.LocalPlayer.Backpack end
     end
-    task.wait(0.1954)
 
     for _, tool in ipairs(player:WaitForChild("Backpack"):GetChildren()) do
         if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
+            tool.Parent = player.Character
+            tool.Parent = player.Backpack
             tool.Parent = player.Character
             tool.Parent = player.Backpack
             if player.Character:FindFirstChild("Humanoid") then
@@ -719,9 +718,6 @@ ControlsSec:button({name="Visualize", callback=function()
             end
             tool.Parent = player.Character
             RunService.Heartbeat:Wait()
-            if tool:FindFirstChild("RightGrip") then
-                pcall(function() tool.RightGrip:Destroy() end)
-            end
             trackTool(tool)
         end
     end
