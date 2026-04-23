@@ -1,3 +1,1 @@
-# OpenViz
-the visualizer.. obv
-IM SO READER RN
+Openviz , the actual opensource version (no decoder and antilog.)
