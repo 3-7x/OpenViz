@@ -2234,3 +2234,36 @@ pcall(function()
     local last = "13.08.2026 Playlists!"
     Library:Notify{ Title = "OpenViz", Content = "Last update: " .. last, Duration = 5 }
 end)
+
+SaveManager:SetIgnoreIndexes{}--autosave here
+
+local AUTOSAVE_NAME = "AutoSave"
+local AUTOSAVE_INTERVAL = 4
+
+local dirty = false
+
+for _, option in pairs(SaveManager.Options) do
+    if typeof(option.OnChanged) == "function" or option.OnChanged then
+        pcall(function()
+            option:OnChanged(function()
+                dirty = true
+            end)
+        end)
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(AUTOSAVE_INTERVAL)
+        if dirty then
+            dirty = false
+            pcall(function()
+                SaveManager:Save(AUTOSAVE_NAME)
+            end)
+        end
+    end
+end)
+
+pcall(function()
+    SaveManager:Load(AUTOSAVE_NAME)
+end)
