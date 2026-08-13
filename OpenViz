@@ -1675,7 +1675,7 @@ local function makeSpyBB(adornee)
     local pad = Instance.new("UIPadding", m)
     pad.PaddingLeft, pad.PaddingRight = UDim.new(0,8), UDim.new(0,8)
     pad.PaddingTop,  pad.PaddingBottom = UDim.new(0,5), UDim.new(0,5)
-    local nameLbl = Instance.new("TextLabel", m)
+    local nameLbl = Instance.new("Tabel", m)
     nameLbl.Size, nameLbl.BackgroundTransparency, nameLbl.Font, nameLbl.TextColor3,
     nameLbl.TextSize, nameLbl.Text, nameLbl.TextTruncate =
         UDim2.new(1,0,0,20), 1, Enum.Font.GothamBold, Color3.fromRGB(90,160,255),
@@ -1694,7 +1694,7 @@ local function makeSpyBB(adornee)
     copyBtn.TextSize, copyBtn.Text, copyBtn.Active, copyBtn.Selectable =
         "CopyBtn", UDim2.new(0,70,1,0), UDim2.new(1,-70,0,0), Color3.fromRGB(40,40,50),
         0, Enum.Font.GothamBold, Color3.new(1,1,1), 10, "COPY ID", true, true
-    local statLbl = Instance.new("TextLabel", m)
+    local statLbl = Instance.extLnew("TextLabel", m)
     statLbl.Name, statLbl.Size, statLbl.Position, statLbl.BackgroundTransparency,
     statLbl.Font, statLbl.TextColor3, statLbl.TextSize, statLbl.Text =
         "Stats", UDim2.new(1,0,0,18), UDim2.new(0,0,0,48), 1,
@@ -1921,7 +1921,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(p)
     if spyTracked[p] then spyTracked[p].bb:Destroy() spyTracked[p] = nil end
-    audioSpyCache[p.Character] = nil
+    audioSpyCache[p.Character] = nil -- here
 end)
 
 RunService.Heartbeat:Connect(function(dt)
@@ -2238,29 +2238,15 @@ end)
 SaveManager:SetIgnoreIndexes{}--autosave here
 
 local AUTOSAVE_NAME = "AutoSave"
-local AUTOSAVE_INTERVAL = 4
-
-local dirty = false
-
-for _, option in pairs(SaveManager.Options) do
-    if typeof(option.OnChanged) == "function" or option.OnChanged then
-        pcall(function()
-            option:OnChanged(function()
-                dirty = true
-            end)
-        end)
-    end
-end
+local AUTOSAVE_INTERVAL = 3
 
 task.spawn(function()
     while true do
         task.wait(AUTOSAVE_INTERVAL)
-        if dirty then
-            dirty = false
-            pcall(function()
-                SaveManager:Save(AUTOSAVE_NAME)
-            end)
-        end
+
+        pcall(function()
+            SaveManager:Save(AUTOSAVE_NAME)
+        end)
     end
 end)
 
