@@ -5,7 +5,7 @@
      could have used helper functions here and there
       if skid pls credit <3
        and v9h i love u & vsal
-       https://discord.gg/txUJ4dzfdy
+        https://discord.gg/txUJ4dzfdy
 
 --[[]]_=]==================]
 
@@ -1607,13 +1607,9 @@ local BLACKLIST = {
 }
 
 local spyScreenGui = Instance.new("ScreenGui")
-spyScreenGui.Name = "AudioSpyCore"
+spyScreenGui.Name = "hi"
 spyScreenGui.ResetOnSpawn = false
-spyScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-spyScreenGui.Parent = (syn and syn.protect_gui 
-and syn.protect_gui(spyScreenGui) and player:WaitForChild("PlayerGui"))
-                   or (gethui and gethui())
-                   or player:WaitForChild("PlayerGui")
+spyScreenGui.Parent = player:WaitForChild("PlayerGui")
 
 local function fmtTime(s)
     s = s or 0
@@ -1675,7 +1671,7 @@ local function makeSpyBB(adornee)
     local pad = Instance.new("UIPadding", m)
     pad.PaddingLeft, pad.PaddingRight = UDim.new(0,8), UDim.new(0,8)
     pad.PaddingTop,  pad.PaddingBottom = UDim.new(0,5), UDim.new(0,5)
-    local nameLbl = Instance.new("Tabel", m)
+    local nameLbl = Instance.new("TextLabel", m)
     nameLbl.Size, nameLbl.BackgroundTransparency, nameLbl.Font, nameLbl.TextColor3,
     nameLbl.TextSize, nameLbl.Text, nameLbl.TextTruncate =
         UDim2.new(1,0,0,20), 1, Enum.Font.GothamBold, Color3.fromRGB(90,160,255),
@@ -1694,7 +1690,7 @@ local function makeSpyBB(adornee)
     copyBtn.TextSize, copyBtn.Text, copyBtn.Active, copyBtn.Selectable =
         "CopyBtn", UDim2.new(0,70,1,0), UDim2.new(1,-70,0,0), Color3.fromRGB(40,40,50),
         0, Enum.Font.GothamBold, Color3.new(1,1,1), 10, "COPY ID", true, true
-    local statLbl = Instance.extLnew("TextLabel", m)
+    local statLbl = Instance.new("TextLabel", m)
     statLbl.Name, statLbl.Size, statLbl.Position, statLbl.BackgroundTransparency,
     statLbl.Font, statLbl.TextColor3, statLbl.TextSize, statLbl.Text =
         "Stats", UDim2.new(1,0,0,18), UDim2.new(0,0,0,48), 1,
@@ -1921,7 +1917,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(p)
     if spyTracked[p] then spyTracked[p].bb:Destroy() spyTracked[p] = nil end
-    audioSpyCache[p.Character] = nil -- here
+    audioSpyCache[p.Character] = nil -- why do u error
 end)
 
 RunService.Heartbeat:Connect(function(dt)
@@ -2231,7 +2227,7 @@ pcall(function()
         Library:Notify{ Title = "OpenViz", Content = "Game: " .. gameName .. " isnt supported but may work!", Duration = 5 }
     end
     
-    local last = "13.08.2026 Playlists!"
+    local last = "14.08.2026 Playlists and bug fixes"
     Library:Notify{ Title = "OpenViz", Content = "Last update: " .. last, Duration = 5 }
 end)
 
