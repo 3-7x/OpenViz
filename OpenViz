@@ -483,6 +483,17 @@ end
 
 local function getMaxLoudness()
     local maxLoudness = 0
+
+    if targetPlayer ~= player and targetPlayer and targetPlayer.Parent and targetPlayer.Character then
+        for _, obj in ipairs(targetPlayer.Character:GetDescendants()) do
+            if obj:IsA("Sound") and obj.IsPlaying and obj.PlaybackLoudness > maxLoudness then
+                maxLoudness = obj.PlaybackLoudness
+            end
+        end
+        return maxLoudness
+    end
+
+    -- Fallback
     for tool, data in pairs(tracked) do
         if not data.sound or not data.sound.Parent then
             data.sound = tool:FindFirstChildWhichIsA("Sound", true)
