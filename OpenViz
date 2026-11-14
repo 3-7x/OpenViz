@@ -2580,7 +2580,7 @@ pcall(function()
         Library:Notify{ Title = "OpenViz", Content = "Game: " .. gameName .. " isnt supported but may work!", Duration = 5 }
     end
     
-    local last = "14.08.2026 Playlists and bug fixes"
+    local last = "15.11.2026 Kinda big update, antilog/vis.."
     Library:Notify{ Title = "OpenViz", Content = "Last update: " .. last, Duration = 5 }
 end)
 
